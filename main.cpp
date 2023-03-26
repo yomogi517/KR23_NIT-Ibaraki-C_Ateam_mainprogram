@@ -1,8 +1,8 @@
 /* ------------------------------------------------------------------------------------------------- */
 /* Kouryuu ROBOCON 2023 Ibaraki Kosen A team main program                                            */
-/* MainBoard: Nucleo F446RE (開発環境:MbedStudio)                                                    */
-/* MotorDriver: 通称黒MD (自作モータードライバ 2017年に設計・製造、駆動方式:LAP、通信方式:I2C)         */
-/* Actuator: RS-555 1/71 * 5     パワーウィンドウモーターJC/LC-578VA * 1                              */
+/* MainBoard: Nucleo F446RE (開発環境:MbedStudio)                                                     */
+/* MotorDriver: 通称黒MD (自作モータードライバ 2017年に設計・製造、駆動方式:LAP、通信方式:I2C)           */
+/* Actuator: RS-555 1/71 * 5     パワーウィンドウモーターJC/LC-578VA * 1                               */
 /* Sensor: Limitswitch * 5                                                                           */
 /* ------------------------------------------------------------------------------------------------- */
 
@@ -24,6 +24,8 @@ Thread th1;
 Thread th2;
 int thread1();  // デバック用printfを100msごとにまわすためのThread
 int thread2();  // センサーをポーリングで読むためのThread
+
+Timer t;
 
 // 使用するピンおよび機能の宣言
 I2C i2c(D14,D15); // D14 = PB_8, D15 = PB_9
@@ -89,12 +91,16 @@ struct sw_flag { // 構造体でトレー昇降機構の状態管理変数を作
     int flag;
 };
 
+struct sw_flag f_Left, f_Right, f_arm_hori, f_arm_auto;
+
 int main (void){
     
-    struct sw_flag f_Left, f_Right;
+    // struct sw_flag f_Left, f_Right;
 
     f_Left.flag = 0;
     f_Right.flag = 0;
+    f_arm_hori.flag = 0;
+    f_arm_auto.flag = 0;
 
     EMG = 0;
 
@@ -130,8 +136,28 @@ int main (void){
         send(M_R_WHEEL, 256 - L_W_Mdata);
         send(M_L_WHEEL, R_W_Mdata);
 
+        
         outputMotorData_Arm_hori(&Arm_hori_Mdata);
         send(M_HORI_ARM, Arm_hori_Mdata);
+        
+
+        if ( !sw_arm_hori_out && ps3.getButtonState(PS3::hidari) ) {
+            f_arm_hori.flag = -1;
+        } else if ( !sw_arm_hori_in && ( ps3.getButtonState(PS3::migi) /* || sw_arm_ue*/ ) ){
+            f_arm_hori.flag = 1;
+        } else if ( ( sw_arm_hori_in || sw_arm_hori_out ) ) {
+            f_arm_hori.flag = 0;
+        }
+
+        if ( f_arm_hori.flag == 0 && f_arm_auto.flag ){
+            send(M_HORI_ARM, 0x80);     // ショートブレーキ
+        } else if ( f_arm_hori.flag == 1 && f_arm_auto.flag ){
+            send(M_HORI_ARM, 0xa0);     // 正転
+        } else if ( f_arm_hori.flag == -1 && f_arm_auto.flag ){
+            send(M_HORI_ARM, 0x60);     // 逆転
+        }
+        // outputMotorData_Arm_hori(&Arm_hori_Mdata);
+        // send(M_HORI_ARM, Arm_hori_Mdata);
 
         if( ps3.getButtonState(PS3::ue) && !sw_arm_ue ){
             // send(M_VERT_ARM, 0x58);      // 128-40の出力（適当だがあまり電圧必要ないと判断）
@@ -148,17 +174,29 @@ int main (void){
 
         if ( ps3.getButtonState(PS3::sankaku) ){
             f_Right.flag = 1;
-        } else if ( ps3.getButtonState(PS3::maru) || sw_tray_ue){
+            f_Left.flag = 1;
+        } else if ( ps3.getButtonState(PS3::maru) || sw_tray_ue || t.read() > 10.0f ){
             f_Right.flag = 0;
+            t.stop();
+            // t.reset();
         } else if ( ( sw_arm_hori_out && !sw_tray_ue ) || ( ps3.getButtonState(PS3::batu) && !sw_tray_ue ) ){
+            t.start();
             f_Right.flag = -1;
         }
 
         if ( ps3.getButtonState(PS3::sankaku) ){
             f_Left.flag = 1;
-        } else if ( ps3.getButtonState(PS3::maru) || sw_tray_sita){
+        } else if ( ps3.getButtonState(PS3::maru) || ( sw_tray_sita && f_Left.flag == -1 ) || t.read() > 10.0f ){
             f_Left.flag = 0;
+            f_Right.flag = 0;
+            t.stop();
+            t.reset();
+        } else if (  ps3.getButtonState(PS3::maru) || sw_tray_sita || t.read() > 10.0f ){
+            f_Left.flag = 0;
+            // t.stop();
+            // t.reset();
         } else if ( ( sw_arm_hori_out && !sw_tray_sita ) || ( ps3.getButtonState(PS3::batu) && !sw_tray_sita ) ){
+            t.start();
             f_Left.flag = -1;
         }
 
@@ -211,6 +249,8 @@ int thread1 (void){ // デバック用
         // printf("lx:%2d ly:%2d la:%3.1f rx:%2d ry:%2d ra:%3.1f\n", ps3.getLeftJoystickXaxis(), ps3.getLeftJoystickYaxis(), ps3.getLeftJoystickAngle(), ps3.getRightJoystickXaxis(), ps3.getRightJoystickYaxis(), ps3.getRightJoystickAngle());
         // printf("Ly:%2d Ldata16:%2x Ldata10:%3d Ry:%2d Rdata16:%2x Rdata10:%3d \n", ps3.getLeftJoystickYaxis(), L_W_Mdata, L_W_Mdata, ps3.getRightJoystickYaxis(),R_W_Mdata, R_W_Mdata);
         // printf("sw1:%d sw2:%d sw3:%d sw4:%d sw5:%d user:%d\n", sw_tray_ue, sw_tray_sita, sw_arm_ue, sw_arm_hori_in, sw_arm_hori_out, user_button);
+        // printf("%f　%d %d\n",t.read(), f_Left.flag, f_Right.flag);
+        printf("%d %d\n", f_arm_hori.flag, f_arm_auto.flag);
         ThisThread::sleep_for(100ms);
     }
 }
@@ -262,8 +302,19 @@ void send (char address, char data){
 }
 
 int outputMotorData_Arm_hori (char *data){
+
     int Rx;
     Rx = ps3.getRightJoystickXaxis();
+
+    // アーム左右自動か手動かのフラッグ
+    if ( Rx == 0 ){
+        f_arm_auto.flag = 1;
+        // f_arm_hori.flag = 0;
+    } else {
+        f_arm_hori.flag = 0;
+        f_arm_auto.flag = 0;
+    }
+
     if ( Rx > 32 && !sw_arm_hori_in) {
         Rx = 32;
     } else if ( Rx < -32 && !sw_arm_hori_out ) {
